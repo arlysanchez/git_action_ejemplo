@@ -1,5 +1,5 @@
 # .github/workflows/main.yml
-# 🚀 Pipeline CI/CD: SonarQube Analysis + Docker Deploy (Self-Hosted Runner)
+# Pipeline CI/CD: SonarQube Analysis + Docker Deploy (Self-Hosted Runner)
 
 name: CI/CD - SonarQube + Docker Deploy
 
@@ -18,36 +18,34 @@ env:
 
 jobs:
 
-  # ─────────────────────────────────────────────
-  # JOB 1: Análisis SonarQube (primero)
-  # ─────────────────────────────────────────────
+  # JOB 1: Analisis SonarQube (primero)
   sonar-analysis:
-    name: 📊 SonarQube Analysis & Quality Gate
+    name: SonarQube Analysis and Quality Gate
     runs-on: self-hosted
     steps:
-      - name: ⬇️ Checkout repository
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: ☕ Set up JDK 17
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
           cache: maven
 
-      - name: 🏗️ Compilar proyecto (sin tests)
+      - name: Compilar proyecto sin tests
         run: mvn -B clean package -DskipTests
 
-      - name: 📊 SonarQube Analysis
+      - name: SonarQube Analysis
         timeout-minutes: 10
         run: |
-          echo "📊 === INICIO: ANÁLISIS DE CALIDAD ==="
+          echo "=== INICIO: ANALISIS DE CALIDAD ==="
           mvn org.sonarsource.scanner.maven:sonar-maven-plugin:3.9.0.2155:sonar "-Dsonar.host.url=${{ secrets.SONAR_HOST_URL }}" "-Dsonar.token=${{ secrets.SONAR_TOKEN }}"
-          echo "✅ === FIN: ANÁLISIS DE CALIDAD COMPLETADO ==="
+          echo "=== FIN: ANALISIS DE CALIDAD COMPLETADO ==="
 
-      - name: 🎯 Quality Gate Check
+      - name: Quality Gate Check
         timeout-minutes: 10
         shell: pwsh
         run: |
@@ -65,60 +63,58 @@ jobs:
               -Headers @{ Authorization = "Basic $base64" }
             $status = $response.projectStatus.status
             $attempts++
-            Write-Host "⏳ Intento $attempts/$maxAttempts - Estado: $status"
+            Write-Host "Intento $attempts de $maxAttempts - Estado: $status"
           }
 
           if ($status -eq "OK") {
-            Write-Host "✅ Quality Gate PASSED — el código cumple los estándares de calidad."
+            Write-Host "Quality Gate PASSED - el codigo cumple los estandares de calidad."
           } else {
-            Write-Host "❌ Quality Gate FAILED — el pipeline se detiene."
+            Write-Host "Quality Gate FAILED - el pipeline se detiene."
             exit 1
           }
 
-  # ─────────────────────────────────────────────
   # JOB 2: Build + Docker Deploy (solo si Sonar pasa)
-  # ─────────────────────────────────────────────
   build-and-deploy:
-    name: 🐳 Build & Docker Deploy
+    name: Build and Docker Deploy
     runs-on: self-hosted
     needs: sonar-analysis
     steps:
-      - name: ⬇️ Checkout repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: ☕ Set up JDK 17
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
           cache: maven
 
-      - name: 🏗️ Build JAR with Maven
+      - name: Build JAR with Maven
         run: mvn -B clean package -DskipTests
 
-      - name: 🐳 Deploy with Docker Compose
+      - name: Deploy with Docker Compose
         shell: pwsh
         run: |
-          Write-Host "✅ Iniciando despliegue en el runner local..."
+          Write-Host "=== Iniciando despliegue en el runner local ==="
           Set-Location docker
 
-          Write-Host "🧹 Limpiando despliegue anterior..."
+          Write-Host "=== Limpiando despliegue anterior ==="
           docker-compose -p ${{ env.DOCKER_PROJECT_NAME }} down -v --remove-orphans
-          if ($LASTEXITCODE -ne 0) { Write-Host "⚠️ No había despliegue anterior." }
+          if ($LASTEXITCODE -ne 0) { Write-Host "No habia despliegue anterior." }
 
-          Write-Host "🏗️ Construyendo y levantando servicios..."
+          Write-Host "=== Construyendo y levantando servicios ==="
           docker-compose -p ${{ env.DOCKER_PROJECT_NAME }} up -d --build
 
-          Write-Host "⏳ Esperando 30s para que la DB se estabilice..."
+          Write-Host "=== Esperando 30s para que la DB se estabilice ==="
           Start-Sleep -Seconds 30
 
-          Write-Host "💾 Inicializando base de datos..."
+          Write-Host "=== Inicializando base de datos ==="
           Get-Content ..\sql\init.sql | docker exec -i ${{ env.DB_CONTAINER_NAME }} mysql -u${{ env.DB_USER }} -p${{ env.DB_PASSWORD }} ${{ env.DB_NAME }}
 
-          Write-Host "🔍 Estado de los contenedores:"
+          Write-Host "=== Estado de los contenedores ==="
           docker-compose -p ${{ env.DOCKER_PROJECT_NAME }} ps
 
-          Write-Host "🗒️ Últimos logs de la app:"
+          Write-Host "=== Ultimos logs de la app ==="
           docker logs --tail 100 ${{ env.APP_CONTAINER_NAME }}
 
-          Write-Host "🎉 ✓ Despliegue completado exitosamente."
+          Write-Host "=== Despliegue completado exitosamente ==="
