@@ -51,45 +51,69 @@ jobs:
           $base64 = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${token}:"))
           $headers = @{ Authorization = "Basic $base64" }
 
-          # Paso 1: leer el task ID que dejo el analisis Maven
-          $reportPath = ".sonar\report-task.txt"
-          if (-Not (Test-Path $reportPath)) {
-            $reportPath = "target\.sonar\report-task.txt"
-          }
-          Write-Host "=== Leyendo task ID desde $reportPath ==="
-          $taskId = ""
-          Get-Content $reportPath | ForEach-Object {
-            if ($_ -match "^ceTaskId=(.+)$") {
-              $taskId = $matches[1]
+          # Buscar report-task.txt en todas las ubicaciones posibles
+          $reportPath = ""
+          $posiblesPaths = @(
+            ".sonar\report-task.txt",
+            "target\.sonar\report-task.txt",
+            ".scannerwork\report-task.txt"
+          )
+          foreach ($path in $posiblesPaths) {
+            if (Test-Path $path) {
+              $reportPath = $path
+              Write-Host "report-task.txt encontrado en: $path"
+              break
             }
           }
-          Write-Host "Task ID encontrado: $taskId"
+          if ($reportPath -eq "") {
+            Write-Host "Buscando report-task.txt en todo el proyecto..."
+            $found = Get-ChildItem -Recurse -Filter "report-task.txt" -ErrorAction SilentlyContinue
+            if ($found) {
+              $reportPath = $found[0].FullName
+              Write-Host "Encontrado en: $reportPath"
+            } else {
+              Write-Host "ERROR: report-task.txt no encontrado"
+              exit 1
+            }
+          }
 
-          # Paso 2: esperar que SonarQube termine de procesar
-          Write-Host "=== Esperando que SonarQube procese el analisis ==="
+          # Leer taskId y projectKey desde el archivo
+          Write-Host "=== Contenido de report-task.txt ==="
+          Get-Content $reportPath | Write-Host
+
+          $taskId = ""
+          $projectKey = ""
+          Get-Content $reportPath | ForEach-Object {
+            if ($_ -match "^ceTaskId=(.+)$")   { $taskId = $matches[1] }
+            if ($_ -match "^projectKey=(.+)$") { $projectKey = $matches[1] }
+          }
+          Write-Host "Task ID: $taskId"
+          Write-Host "Project Key: $projectKey"
+
+          # Esperar que SonarQube termine de procesar el task
+          Write-Host "=== Esperando procesamiento en SonarQube ==="
           $taskStatus = ""
           $attempts = 0
           while ($taskStatus -ne "SUCCESS" -and $taskStatus -ne "FAILED" -and $taskStatus -ne "CANCELLED" -and $attempts -lt 20) {
             Start-Sleep -Seconds 10
-            $taskResponse = Invoke-RestMethod `
-              -Uri "$hostUrl/api/ce/task?id=$taskId" `
-              -Headers $headers
-            $taskStatus = $taskResponse.task.status
+            try {
+              $taskResponse = Invoke-RestMethod -Uri "$hostUrl/api/ce/task?id=$taskId" -Headers $headers
+              $taskStatus = $taskResponse.task.status
+            } catch {
+              Write-Host "Error consultando task: $_"
+            }
             $attempts++
             Write-Host "Intento $attempts - Task status: $taskStatus"
           }
 
           if ($taskStatus -ne "SUCCESS") {
-            Write-Host "=== El analisis de SonarQube no termino correctamente: $taskStatus ==="
+            Write-Host "El analisis no termino correctamente: $taskStatus"
             exit 1
           }
 
-          # Paso 3: consultar el Quality Gate
-          Write-Host "=== Consultando Quality Gate ==="
-          $projectKey = "ecommerce_git_action"
-          $qgResponse = Invoke-RestMethod `
-            -Uri "$hostUrl/api/qualitygates/project_status?projectKey=$projectKey" `
-            -Headers $headers
+          # Consultar Quality Gate con el projectKey leido del archivo
+          Write-Host "=== Consultando Quality Gate para: $projectKey ==="
+          $qgResponse = Invoke-RestMethod -Uri "$hostUrl/api/qualitygates/project_status?projectKey=$projectKey" -Headers $headers
           $qgStatus = $qgResponse.projectStatus.status
           Write-Host "Quality Gate status: $qgStatus"
 
@@ -99,7 +123,7 @@ jobs:
             Write-Host "=== Quality Gate FAILED - pipeline detenido ==="
             $qgResponse.projectStatus.conditions | ForEach-Object {
               if ($_.status -ne "OK") {
-                Write-Host "Condicion fallida: $($_.metricKey) - valor: $($_.actualValue) - umbral: $($_.errorThreshold)"
+                Write-Host "Fallo: $($_.metricKey) - valor actual: $($_.actualValue) - umbral: $($_.errorThreshold)"
               }
             }
             exit 1
