@@ -44,7 +44,7 @@ jobs:
 
       - name: Quality Gate Check
         timeout-minutes: 10
-        shell: pwsh
+        shell: powershell
         run: |
           $token = "${{ secrets.SONAR_TOKEN }}"
           $hostUrl = "${{ secrets.SONAR_HOST_URL }}"
