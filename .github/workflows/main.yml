@@ -1,0 +1,129 @@
+# .github/workflows/main.yml
+# 🚀 Pipeline CI/CD: SonarQube Analysis + Docker Deploy (Self-Hosted Runner)
+
+name: CI/CD - SonarQube + Docker Deploy
+
+on:
+  push:
+    branches: [ "master" ]
+  workflow_dispatch:
+
+env:
+  DOCKER_PROJECT_NAME: 'ecomapp'
+  APP_CONTAINER_NAME: 'product_app'
+  DB_CONTAINER_NAME: 'mysql-ecommerce-prod'
+  DB_NAME: 'ecommerce_lp2_prod'
+  DB_USER: 'root'
+  DB_PASSWORD: 'admin123'
+
+jobs:
+  # ─────────────────────────────────────────────
+  # JOB 1: Análisis SonarQube (primero)
+  # ─────────────────────────────────────────────
+  sonar-analysis:
+    name: 📊 SonarQube Analysis & Quality Gate
+    runs-on: self-hosted
+    steps:
+      - name: ⬇️ Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Necesario para SonarQube (análisis de historial)
+
+      - name: ☕ Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: 🔬 Build + Tests + Coverage Report
+        run: mvn -B clean verify -Pcoverage
+
+      - name: 📊 SonarQube Analysis
+        timeout-minutes: 10
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        run: |
+          echo "📊 === INICIO: ANÁLISIS DE CALIDAD ==="
+          mvn org.sonarsource.scanner.maven:sonar-maven-plugin:3.9.0.2155:sonar \
+            -Pcoverage \
+            -Dsonar.host.url=${{ secrets.SONAR_HOST_URL }} \
+            -Dsonar.token=${{ secrets.SONAR_TOKEN }}
+          echo "✅ === FIN: ANÁLISIS DE CALIDAD COMPLETADO ==="
+
+      - name: 🎯 Quality Gate Check
+        timeout-minutes: 10
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        run: |
+          echo "🎯 === VERIFICANDO QUALITY GATE ==="
+          # Espera el resultado del Quality Gate via API de SonarQube
+          STATUS=""
+          ATTEMPTS=0
+          MAX_ATTEMPTS=20
+
+          while [ "$STATUS" != "OK" ] && [ "$STATUS" != "ERROR" ] && [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
+            sleep 30
+            RESPONSE=$(curl -s -u "${{ secrets.SONAR_TOKEN }}:" \
+              "${{ secrets.SONAR_HOST_URL }}/api/qualitygates/project_status?projectKey=ecommerce_git_action")
+            STATUS=$(echo $RESPONSE | python3 -c "import sys,json; print(json.load(sys.stdin)['projectStatus']['status'])")
+            ATTEMPTS=$((ATTEMPTS + 1))
+            echo "⏳ Intento $ATTEMPTS/$MAX_ATTEMPTS - Estado: $STATUS"
+          done
+
+          if [ "$STATUS" = "OK" ]; then
+            echo "✅ Quality Gate PASSED — el código cumple los estándares de calidad."
+          else
+            echo "❌ Quality Gate FAILED — el pipeline se detiene. Revisa SonarQube."
+            exit 1
+          fi
+
+  # ─────────────────────────────────────────────
+  # JOB 2: Build + Docker Deploy (solo si Sonar pasa)
+  # ─────────────────────────────────────────────
+  build-and-deploy:
+    name: 🐳 Build & Docker Deploy
+    runs-on: self-hosted
+    needs: sonar-analysis   # ← Solo corre si el job anterior pasó
+    steps:
+      - name: ⬇️ Checkout repository
+        uses: actions/checkout@v4
+
+      - name: ☕ Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: 🏗️ Build JAR with Maven
+        run: mvn -B clean package -DskipTests
+
+      - name: 🐳 Deploy with Docker Compose
+        run: |
+          echo "✅ Iniciando despliegue en el runner local..."
+          cd docker
+
+          echo "🧹 Limpiando despliegue anterior..."
+          docker-compose -p ${{ env.DOCKER_PROJECT_NAME }} down -v --remove-orphans \
+            || echo "⚠️ No había despliegue anterior."
+
+          echo "🏗️ Construyendo y levantando servicios..."
+          docker-compose -p ${{ env.DOCKER_PROJECT_NAME }} up -d --build
+
+          echo "⏳ Esperando 30s para que la DB se estabilice..."
+          sleep 30
+
+          echo "💾 Inicializando base de datos..."
+          cat ../sql/init.sql | docker exec -i ${{ env.DB_CONTAINER_NAME }} \
+            mysql -u${{ env.DB_USER }} -p${{ env.DB_PASSWORD }} ${{ env.DB_NAME }}
+
+          echo "🔍 Estado de los contenedores:"
+          docker-compose -p ${{ env.DOCKER_PROJECT_NAME }} ps
+
+          echo "🗒️ Últimos logs de la app:"
+          docker logs --tail 100 ${{ env.APP_CONTAINER_NAME }}
+
+          echo "🎉 ✓ Despliegue completado exitosamente."
