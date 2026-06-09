@@ -42,40 +42,66 @@ jobs:
         timeout-minutes: 10
         run: mvn org.sonarsource.scanner.maven:sonar-maven-plugin:3.9.0.2155:sonar "-Dsonar.projectKey=ecommerce_git_action" "-Dsonar.host.url=${{ secrets.SONAR_HOST_URL }}" "-Dsonar.login=${{ secrets.SONAR_TOKEN }}"
 
-       # NOTA: usamos -Dsonar.login (no -Dsonar.token) porque SonarQube 9.9 lo requiere asi
-
       - name: Quality Gate Check
         timeout-minutes: 10
         shell: pwsh
         run: |
-          $status = ""
-          $attempts = 0
-          $maxAttempts = 20
           $token = "${{ secrets.SONAR_TOKEN }}"
           $hostUrl = "${{ secrets.SONAR_HOST_URL }}"
-          $projectKey = "ecommerce_git_action"
           $base64 = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${token}:"))
+          $headers = @{ Authorization = "Basic $base64" }
 
-          Write-Host "=== VERIFICANDO QUALITY GATE ==="
-
-          while ($status -ne "OK" -and $status -ne "ERROR" -and $attempts -lt $maxAttempts) {
-            Start-Sleep -Seconds 30
-            try {
-              $response = Invoke-RestMethod `
-                -Uri "$hostUrl/api/qualitygates/project_status?projectKey=$projectKey" `
-                -Headers @{ Authorization = "Basic $base64" }
-              $status = $response.projectStatus.status
-            } catch {
-              Write-Host "Error consultando Quality Gate: $_"
+          # Paso 1: leer el task ID que dejo el analisis Maven
+          $reportPath = ".sonar\report-task.txt"
+          if (-Not (Test-Path $reportPath)) {
+            $reportPath = "target\.sonar\report-task.txt"
+          }
+          Write-Host "=== Leyendo task ID desde $reportPath ==="
+          $taskId = ""
+          Get-Content $reportPath | ForEach-Object {
+            if ($_ -match "^ceTaskId=(.+)$") {
+              $taskId = $matches[1]
             }
+          }
+          Write-Host "Task ID encontrado: $taskId"
+
+          # Paso 2: esperar que SonarQube termine de procesar
+          Write-Host "=== Esperando que SonarQube procese el analisis ==="
+          $taskStatus = ""
+          $attempts = 0
+          while ($taskStatus -ne "SUCCESS" -and $taskStatus -ne "FAILED" -and $taskStatus -ne "CANCELLED" -and $attempts -lt 20) {
+            Start-Sleep -Seconds 10
+            $taskResponse = Invoke-RestMethod `
+              -Uri "$hostUrl/api/ce/task?id=$taskId" `
+              -Headers $headers
+            $taskStatus = $taskResponse.task.status
             $attempts++
-            Write-Host "Intento $attempts de $maxAttempts - Estado: $status"
+            Write-Host "Intento $attempts - Task status: $taskStatus"
           }
 
-          if ($status -eq "OK") {
+          if ($taskStatus -ne "SUCCESS") {
+            Write-Host "=== El analisis de SonarQube no termino correctamente: $taskStatus ==="
+            exit 1
+          }
+
+          # Paso 3: consultar el Quality Gate
+          Write-Host "=== Consultando Quality Gate ==="
+          $projectKey = "ecommerce_git_action"
+          $qgResponse = Invoke-RestMethod `
+            -Uri "$hostUrl/api/qualitygates/project_status?projectKey=$projectKey" `
+            -Headers $headers
+          $qgStatus = $qgResponse.projectStatus.status
+          Write-Host "Quality Gate status: $qgStatus"
+
+          if ($qgStatus -eq "OK") {
             Write-Host "=== Quality Gate PASSED - codigo aprobado ==="
           } else {
             Write-Host "=== Quality Gate FAILED - pipeline detenido ==="
+            $qgResponse.projectStatus.conditions | ForEach-Object {
+              if ($_.status -ne "OK") {
+                Write-Host "Condicion fallida: $($_.metricKey) - valor: $($_.actualValue) - umbral: $($_.errorThreshold)"
+              }
+            }
             exit 1
           }
 
