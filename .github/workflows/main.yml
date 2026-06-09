@@ -77,19 +77,20 @@ jobs:
         run: mvn -B clean package -DskipTests
 
       - name: Deploy with Docker Compose
+        shell: cmd
         run: |
-          echo "Iniciando despliegue en el runner local..."
+          echo Iniciando despliegue en el runner local...
           cd docker
-          echo "Limpiando despliegue anterior..."
-          docker-compose -p ${{ env.DOCKER_PROJECT_NAME }} down -v --remove-orphans || echo "No se encontro un despliegue anterior."
-          echo "Construyendo y levantando los servicios..."
-          docker-compose -p ${{ env.DOCKER_PROJECT_NAME }} up -d --build
-          echo "Esperando 30 segundos para que la DB se estabilice..."
-          sleep 30
-          echo "Inicializando base de datos desde init.sql..."
-          cat ../sql/init.sql | docker exec -i ${{ env.DB_CONTAINER_NAME }} mysql -u${{ env.DB_USER }} -p${{ env.DB_PASSWORD }} ${{ env.DB_NAME }}
-          echo "Verificando estado de los contenedores..."
-          docker-compose -p ${{ env.DOCKER_PROJECT_NAME }} ps
-          echo "Mostrando los ultimos logs de la aplicacion:"
-          docker logs --tail 100 ${{ env.APP_CONTAINER_NAME }}
-          echo "Despliegue local completado exitosamente."
+          echo Limpiando despliegue anterior...
+          docker-compose -p %DOCKER_PROJECT_NAME% down -v --remove-orphans
+          echo Construyendo y levantando los servicios...
+          docker-compose -p %DOCKER_PROJECT_NAME% up -d --build
+          echo Esperando 30 segundos para que la DB se estabilice...
+          timeout /t 30 /nobreak
+          echo Inicializando base de datos desde init.sql...
+          type ..\sql\init.sql | docker exec -i %DB_CONTAINER_NAME% mysql -u%DB_USER% -p%DB_PASSWORD% %DB_NAME%
+          echo Verificando estado de los contenedores...
+          docker-compose -p %DOCKER_PROJECT_NAME% ps
+          echo Mostrando los ultimos logs de la aplicacion:
+          docker logs --tail 100 %APP_CONTAINER_NAME%
+          echo Despliegue local completado exitosamente.
