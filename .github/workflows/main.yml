@@ -77,34 +77,19 @@ jobs:
         run: mvn -B clean package -DskipTests
 
       - name: Deploy with Docker Compose
-        shell: pwsh
         run: |
-          Write-Host "=== Iniciando despliegue ==="
-          Set-Location docker
-
-          Write-Host "=== Limpiando despliegue anterior ==="
-          docker-compose -p ${{ env.DOCKER_PROJECT_NAME }} down -v --remove-orphans
-          if ($LASTEXITCODE -ne 0) { Write-Host "No habia despliegue anterior." }
-
-          Write-Host "=== Construyendo y levantando servicios ==="
+          echo "Iniciando despliegue en el runner local..."
+          cd docker
+          echo "Limpiando despliegue anterior..."
+          docker-compose -p ${{ env.DOCKER_PROJECT_NAME }} down -v --remove-orphans || echo "No se encontro un despliegue anterior."
+          echo "Construyendo y levantando los servicios..."
           docker-compose -p ${{ env.DOCKER_PROJECT_NAME }} up -d --build
-
-          Write-Host "=== Esperando 30s para que la DB se estabilice ==="
-          Start-Sleep -Seconds 30
-
-          Write-Host "=== Inicializando base de datos ==="
-          Get-Content ..\sql\init.sql | docker exec -i ${{ env.DB_CONTAINER_NAME }} mysql -u${{ env.DB_USER }} -p${{ env.DB_PASSWORD }} ${{ env.DB_NAME }}
-
-          Write-Host "=== Verificando estructura de la base de datos ==="
-          docker exec ${{ env.DB_CONTAINER_NAME }} mysql -u${{ env.DB_USER }} -p${{ env.DB_PASSWORD }} -e "USE ${{ env.DB_NAME }}; SHOW TABLES;"
-
-          Write-Host "=== Esperando inicio de la aplicacion ==="
-          Start-Sleep -Seconds 30
-
-          Write-Host "=== Estado de los contenedores ==="
+          echo "Esperando 30 segundos para que la DB se estabilice..."
+          sleep 30
+          echo "Inicializando base de datos desde init.sql..."
+          cat ../sql/init.sql | docker exec -i ${{ env.DB_CONTAINER_NAME }} mysql -u${{ env.DB_USER }} -p${{ env.DB_PASSWORD }} ${{ env.DB_NAME }}
+          echo "Verificando estado de los contenedores..."
           docker-compose -p ${{ env.DOCKER_PROJECT_NAME }} ps
-
-          Write-Host "=== Ultimos logs de la app ==="
-          docker logs --tail 200 ${{ env.APP_CONTAINER_NAME }}
-
-          Write-Host "=== Despliegue completado exitosamente ==="
+          echo "Mostrando los ultimos logs de la aplicacion:"
+          docker logs --tail 100 ${{ env.APP_CONTAINER_NAME }}
+          echo "Despliegue local completado exitosamente."
