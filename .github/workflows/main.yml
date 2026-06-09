@@ -40,7 +40,21 @@ jobs:
 
       - name: SonarQube Analysis
         timeout-minutes: 10
-        run: mvn org.sonarsource.scanner.maven:sonar-maven-plugin:3.9.0.2155:sonar "-Dsonar.projectKey=ecommerce_git_action" "-Dsonar.host.url=${{ secrets.SONAR_HOST_URL }}" "-Dsonar.login=${{ secrets.SONAR_TOKEN }}"
+        run: mvn org.sonarsource.scanner.maven:sonar-maven-plugin:3.9.0.2155:sonar "-Dsonar.projectKey=ecommerce_git_action" "-Dsonar.host.url=${{ secrets.SONAR_HOST_URL }}" "-Dsonar.login=${{ secrets.SONAR_TOKEN }}" "-Dsonar.working.directory=.sonarwork"
+
+      - name: Verificar report-task generado
+        shell: powershell
+        run: |
+          Write-Host "=== Buscando report-task.txt ==="
+          Get-ChildItem -Recurse -Filter "report-task.txt" -ErrorAction SilentlyContinue | Select-Object FullName
+          Write-Host "=== Contenido del directorio .sonarwork ==="
+          if (Test-Path ".sonarwork") {
+            Get-ChildItem ".sonarwork" -Recurse | Select-Object FullName
+          } else {
+            Write-Host ".sonarwork no existe"
+          }
+          Write-Host "=== Directorios en raiz ==="
+          Get-ChildItem -Directory | Select-Object Name
 
       - name: Quality Gate Check
         timeout-minutes: 10
@@ -51,9 +65,10 @@ jobs:
           $base64 = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${token}:"))
           $headers = @{ Authorization = "Basic $base64" }
 
-          # Buscar report-task.txt en todas las ubicaciones posibles
+          # Buscar report-task.txt con la ruta definida en sonar.working.directory
           $reportPath = ""
           $posiblesPaths = @(
+            ".sonarwork\report-task.txt",
             ".sonar\report-task.txt",
             "target\.sonar\report-task.txt",
             ".scannerwork\report-task.txt"
@@ -66,7 +81,7 @@ jobs:
             }
           }
           if ($reportPath -eq "") {
-            Write-Host "Buscando report-task.txt en todo el proyecto..."
+            Write-Host "Buscando en todo el proyecto..."
             $found = Get-ChildItem -Recurse -Filter "report-task.txt" -ErrorAction SilentlyContinue
             if ($found) {
               $reportPath = $found[0].FullName
@@ -111,7 +126,7 @@ jobs:
             exit 1
           }
 
-          # Consultar Quality Gate con el projectKey leido del archivo
+          # Consultar Quality Gate
           Write-Host "=== Consultando Quality Gate para: $projectKey ==="
           $qgResponse = Invoke-RestMethod -Uri "$hostUrl/api/qualitygates/project_status?projectKey=$projectKey" -Headers $headers
           $qgStatus = $qgResponse.projectStatus.status
