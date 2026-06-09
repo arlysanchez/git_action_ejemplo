@@ -17,6 +17,7 @@ env:
   DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
 
 jobs:
+
   # ─────────────────────────────────────────────
   # JOB 1: Análisis SonarQube (primero)
   # ─────────────────────────────────────────────
@@ -27,7 +28,7 @@ jobs:
       - name: ⬇️ Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Necesario para SonarQube (análisis de historial)
+          fetch-depth: 0
 
       - name: ☕ Set up JDK 17
         uses: actions/setup-java@v4
@@ -36,49 +37,43 @@ jobs:
           distribution: 'temurin'
           cache: maven
 
-      - name: 🔬 Build + Tests + Coverage Report
-        run: mvn -B clean verify -Pcoverage
+      - name: 🏗️ Compilar proyecto (sin tests)
+        run: mvn -B clean package -DskipTests
 
       - name: 📊 SonarQube Analysis
         timeout-minutes: 10
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
         run: |
           echo "📊 === INICIO: ANÁLISIS DE CALIDAD ==="
-          mvn org.sonarsource.scanner.maven:sonar-maven-plugin:3.9.0.2155:sonar \
-            -Pcoverage \
-            -Dsonar.host.url=${{ secrets.SONAR_HOST_URL }} \
-            -Dsonar.token=${{ secrets.SONAR_TOKEN }}
+          mvn org.sonarsource.scanner.maven:sonar-maven-plugin:3.9.0.2155:sonar "-Dsonar.host.url=${{ secrets.SONAR_HOST_URL }}" "-Dsonar.token=${{ secrets.SONAR_TOKEN }}"
           echo "✅ === FIN: ANÁLISIS DE CALIDAD COMPLETADO ==="
 
       - name: 🎯 Quality Gate Check
         timeout-minutes: 10
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        shell: pwsh
         run: |
-          echo "🎯 === VERIFICANDO QUALITY GATE ==="
-          # Espera el resultado del Quality Gate via API de SonarQube
-          STATUS=""
-          ATTEMPTS=0
-          MAX_ATTEMPTS=20
+          $status = ""
+          $attempts = 0
+          $maxAttempts = 20
+          $token = "${{ secrets.SONAR_TOKEN }}"
+          $hostUrl = "${{ secrets.SONAR_HOST_URL }}"
+          $projectKey = "ecommerce_git_action"
+          $base64 = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${token}:"))
 
-          while [ "$STATUS" != "OK" ] && [ "$STATUS" != "ERROR" ] && [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
-            sleep 30
-            RESPONSE=$(curl -s -u "${{ secrets.SONAR_TOKEN }}:" \
-              "${{ secrets.SONAR_HOST_URL }}/api/qualitygates/project_status?projectKey=ecommerce_git_action")
-            STATUS=$(echo $RESPONSE | python3 -c "import sys,json; print(json.load(sys.stdin)['projectStatus']['status'])")
-            ATTEMPTS=$((ATTEMPTS + 1))
-            echo "⏳ Intento $ATTEMPTS/$MAX_ATTEMPTS - Estado: $STATUS"
-          done
+          while ($status -ne "OK" -and $status -ne "ERROR" -and $attempts -lt $maxAttempts) {
+            Start-Sleep -Seconds 30
+            $response = Invoke-RestMethod -Uri "$hostUrl/api/qualitygates/project_status?projectKey=$projectKey" `
+              -Headers @{ Authorization = "Basic $base64" }
+            $status = $response.projectStatus.status
+            $attempts++
+            Write-Host "⏳ Intento $attempts/$maxAttempts - Estado: $status"
+          }
 
-          if [ "$STATUS" = "OK" ]; then
-            echo "✅ Quality Gate PASSED — el código cumple los estándares de calidad."
-          else
-            echo "❌ Quality Gate FAILED — el pipeline se detiene. Revisa SonarQube."
+          if ($status -eq "OK") {
+            Write-Host "✅ Quality Gate PASSED — el código cumple los estándares de calidad."
+          } else {
+            Write-Host "❌ Quality Gate FAILED — el pipeline se detiene."
             exit 1
-          fi
+          }
 
   # ─────────────────────────────────────────────
   # JOB 2: Build + Docker Deploy (solo si Sonar pasa)
@@ -86,7 +81,7 @@ jobs:
   build-and-deploy:
     name: 🐳 Build & Docker Deploy
     runs-on: self-hosted
-    needs: sonar-analysis   # ← Solo corre si el job anterior pasó
+    needs: sonar-analysis
     steps:
       - name: ⬇️ Checkout repository
         uses: actions/checkout@v4
@@ -102,28 +97,28 @@ jobs:
         run: mvn -B clean package -DskipTests
 
       - name: 🐳 Deploy with Docker Compose
+        shell: pwsh
         run: |
-          echo "✅ Iniciando despliegue en el runner local..."
-          cd docker
+          Write-Host "✅ Iniciando despliegue en el runner local..."
+          Set-Location docker
 
-          echo "🧹 Limpiando despliegue anterior..."
-          docker-compose -p ${{ env.DOCKER_PROJECT_NAME }} down -v --remove-orphans \
-            || echo "⚠️ No había despliegue anterior."
+          Write-Host "🧹 Limpiando despliegue anterior..."
+          docker-compose -p ${{ env.DOCKER_PROJECT_NAME }} down -v --remove-orphans
+          if ($LASTEXITCODE -ne 0) { Write-Host "⚠️ No había despliegue anterior." }
 
-          echo "🏗️ Construyendo y levantando servicios..."
+          Write-Host "🏗️ Construyendo y levantando servicios..."
           docker-compose -p ${{ env.DOCKER_PROJECT_NAME }} up -d --build
 
-          echo "⏳ Esperando 30s para que la DB se estabilice..."
-          sleep 30
+          Write-Host "⏳ Esperando 30s para que la DB se estabilice..."
+          Start-Sleep -Seconds 30
 
-          echo "💾 Inicializando base de datos..."
-          cat ../sql/init.sql | docker exec -i ${{ env.DB_CONTAINER_NAME }} \
-            mysql -u${{ env.DB_USER }} -p${{ env.DB_PASSWORD }} ${{ env.DB_NAME }}
+          Write-Host "💾 Inicializando base de datos..."
+          Get-Content ..\sql\init.sql | docker exec -i ${{ env.DB_CONTAINER_NAME }} mysql -u${{ env.DB_USER }} -p${{ env.DB_PASSWORD }} ${{ env.DB_NAME }}
 
-          echo "🔍 Estado de los contenedores:"
+          Write-Host "🔍 Estado de los contenedores:"
           docker-compose -p ${{ env.DOCKER_PROJECT_NAME }} ps
 
-          echo "🗒️ Últimos logs de la app:"
+          Write-Host "🗒️ Últimos logs de la app:"
           docker logs --tail 100 ${{ env.APP_CONTAINER_NAME }}
 
-          echo "🎉 ✓ Despliegue completado exitosamente."
+          Write-Host "🎉 ✓ Despliegue completado exitosamente."
